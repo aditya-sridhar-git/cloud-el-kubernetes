@@ -1,0 +1,19 @@
+version: 0.2
+
+# Environment provided by the CodeBuild project:  ECR_REPO_URI, AWS_REGION
+# Environment provided per build by the backend:  IMAGE_TAG  (e.g. flask-app-3f2a1bc)
+# The uploaded source zip is extracted at the build root and must contain a Dockerfile.
+
+phases:
+  pre_build:
+    commands:
+      - echo "Logging in to ECR"
+      - aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "${ECR_REPO_URI%%/*}"
+  build:
+    commands:
+      - echo "Building $ECR_REPO_URI:$IMAGE_TAG"
+      - docker build -t "$ECR_REPO_URI:$IMAGE_TAG" .
+  post_build:
+    commands:
+      - docker push "$ECR_REPO_URI:$IMAGE_TAG"
+      - echo "Pushed $ECR_REPO_URI:$IMAGE_TAG"

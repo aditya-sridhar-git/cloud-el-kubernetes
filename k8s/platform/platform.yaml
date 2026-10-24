@@ -1,0 +1,209 @@
+# Platform components on K3s. Rendered and applied by scripts/deploy-platform.ps1, which replaces
+# __BACKEND_IMAGE__, __FRONTEND_IMAGE__ and __PLATFORM_HOST__ and creates the platform-config
+# ConfigMap and platform-secrets Secret.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: apps
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: platform-backend
+  namespace: platform
+---
+# Everything the backend does to deployed apps, limited to the `apps` namespace.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: platform-backend
+  namespace: apps
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments", "deployments/status"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "pods/proxy", "events"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["autoscaling"]
+    resources: ["horizontalpodautoscalers"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["metrics.k8s.io"]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: platform-backend
+  namespace: apps
+subjects:
+  - kind: ServiceAccount
+    name: platform-backend
+    namespace: platform
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: platform-backend
+---
+# Read-only node access: allocatable CPU caps the recommender's maxReplicas.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: platform-backend-nodes
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: platform-backend-nodes
+subjects:
+  - kind: ServiceAccount
+    name: platform-backend
+    namespace: platform
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: platform-backend-nodes
+---
+# SQLite lives here (K3s local-path provisioner = the node's EBS volume; survives stop/start).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: platform-data
+  namespace: platform
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: platform-backend
+  namespace: platform
+  labels: { app: platform-backend }
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate # single writer to SQLite on a ReadWriteOnce volume
+  selector:
+    matchLabels: { app: platform-backend }
+  template:
+    metadata:
+      labels: { app: platform-backend }
+    spec:
+      serviceAccountName: platform-backend
+      containers:
+        - name: backend
+          image: __BACKEND_IMAGE__
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: platform-config
+          env:
+            - name: API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: platform-secrets
+                  key: API_TOKEN
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { cpu: "1", memory: 512Mi }
+          readinessProbe:
+            httpGet: { path: /api/healthz, port: 8000 }
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /api/healthz, port: 8000 }
+            initialDelaySeconds: 20
+            periodSeconds: 15
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: platform-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: platform-backend
+  namespace: platform
+spec:
+  selector: { app: platform-backend }
+  ports:
+    - port: 8000
+      targetPort: 8000
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: platform-frontend
+  namespace: platform
+  labels: { app: platform-frontend }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: platform-frontend }
+  template:
+    metadata:
+      labels: { app: platform-frontend }
+    spec:
+      containers:
+        - name: frontend
+          image: __FRONTEND_IMAGE__
+          ports:
+            - containerPort: 80
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+            limits: { cpu: 200m, memory: 64Mi }
+          readinessProbe:
+            httpGet: { path: /, port: 80 }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: platform-frontend
+  namespace: platform
+spec:
+  selector: { app: platform-frontend }
+  ports:
+    - port: 80
+      targetPort: 80
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: platform
+  namespace: platform
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: __PLATFORM_HOST__
+      http:
+        paths:
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: platform-backend
+                port: { number: 8000 }
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: platform-frontend
+                port: { number: 80 }

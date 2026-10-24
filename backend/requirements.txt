@@ -1,0 +1,9 @@
+fastapi==0.115.6
+uvicorn[standard]==0.32.1
+sqlmodel==0.0.22
+pydantic-settings==2.6.1
+kubernetes==31.0.0
+boto3==1.35.80
+docker==7.1.0
+apscheduler==3.10.4
+tzdata==2024.2

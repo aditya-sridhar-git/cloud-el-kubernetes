@@ -1,0 +1,31 @@
+# Terraform
+**/.terraform/
+*.tfstate
+*.tfstate.*
+terraform.tfvars
+*.auto.tfvars
+crash.log
+
+# Cluster credentials
+.kube/
+*kubeconfig*.yaml
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+
+# Node
+node_modules/
+dist/
+
+# Experiment output (regenerate with experiments/run_experiment.py)
+experiments/results/
+
+# Local backend data
+backend/data/
+
+# Secrets / local config
+.env
+.env.*
