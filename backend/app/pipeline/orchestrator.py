@@ -86,12 +86,14 @@ class Orchestrator:
     async def _run_spec(self, dep_id: int, app_name: str, spec: AppSpec) -> None:
         async with self._lock(app_name):
             try:
-                await self._rollout(dep_id, app_name, spec)
+                # A spec can differ from the saved settings (a manual rollback, or a change queued
+                # behind one that rolled back), so a successful rollout makes it the saved state.
+                await self._rollout(dep_id, app_name, spec, save_settings=True)
             except Exception as e:
                 log.exception("deployment %s failed", dep_id)
                 self._set(dep_id, app_name, DeployStatus.FAILED, error=str(e)[:2000], finished=True)
 
-    async def _rollout(self, dep_id: int, app_name: str, spec: AppSpec) -> None:
+    async def _rollout(self, dep_id: int, app_name: str, spec: AppSpec, save_settings: bool = False) -> None:
         self._set(dep_id, app_name, DeployStatus.APPLYING, image=spec.image, spec_json=spec.to_json())
         await asyncio.to_thread(self.k8s.apply_spec, spec)
 
@@ -99,6 +101,8 @@ class Orchestrator:
         progress = lambda msg: self._event(app_name, dep_id, msg)  # noqa: E731
         ok, msg = await asyncio.to_thread(self.k8s.wait_for_rollout, app_name, progress)
         if ok:
+            if save_settings:
+                self._save_settings(app_name, spec)
             self._set(dep_id, app_name, DeployStatus.SUCCEEDED, finished=True)
             return
 
@@ -114,11 +118,25 @@ class Orchestrator:
         await asyncio.to_thread(self.k8s.apply_spec, prev_spec)
         ok_back, msg_back = await asyncio.to_thread(self.k8s.wait_for_rollout, app_name, progress)
         if ok_back:
-            self._set(dep_id, app_name, DeployStatus.ROLLED_BACK, error=f"{msg}; rolled back to deployment #{previous.id}", finished=True)
+            # Otherwise the failed settings stay saved and break the next redeploy.
+            self._save_settings(app_name, prev_spec)
+            error = f"{msg}; rolled back to deployment #{previous.id} and restored its settings"
+            self._set(dep_id, app_name, DeployStatus.ROLLED_BACK, error=error, finished=True)
         else:
             self._set(dep_id, app_name, DeployStatus.FAILED, error=f"{msg}; rollback also failed: {msg_back}", finished=True)
 
     # ---- helpers ----------------------------------------------------------------------
+
+    def _save_settings(self, app_name: str, spec: AppSpec) -> None:
+        """Make the App row match the spec that is now running."""
+        with db.session() as s:
+            app = s.get(App, app_name)
+            if app is None:
+                return
+            for field, value in spec.settings().items():
+                setattr(app, field, value)
+            s.add(app)
+            s.commit()
 
     def _lock(self, app_name: str) -> asyncio.Lock:
         return self._locks.setdefault(app_name, asyncio.Lock())

@@ -75,6 +75,57 @@ def test_manual_rollback_reapplies_old_spec(client, ops):
     assert ops.applied[-1].image == first["image"]
 
 
+def saved_app(client):
+    return client.get("/api/apps/demo", headers=AUTH).json()
+
+
+def test_automatic_rollback_restores_saved_settings(client, ops):
+    wait_for_status(client, "demo", create(client)["deployment"]["id"])
+
+    ops.rollout_results = [(False, "readiness probe failed")]
+    r = client.patch("/api/apps/demo", json={"health_path": "/does-not-exist"}, headers=AUTH)
+    dep = wait_for_status(client, "demo", r.json()["deployment"]["id"])
+    assert dep["status"] == "ROLLED_BACK"
+    assert "restored its settings" in dep["error"]
+    assert saved_app(client)["health_path"] == "/healthz"
+
+    # The bad value must not come back on the next redeploy.
+    redeploy = client.post("/api/apps/demo/deploy", headers=AUTH).json()
+    assert wait_for_status(client, "demo", redeploy["id"])["status"] == "SUCCEEDED"
+    assert ops.applied[-1].health_path == "/healthz"
+
+
+def test_manual_rollback_restores_that_deployments_settings(client, ops):
+    first = wait_for_status(client, "demo", create(client)["deployment"]["id"])
+    r = client.patch("/api/apps/demo", json={"cpu_request_m": 200, "cpu_limit_m": 800}, headers=AUTH)
+    wait_for_status(client, "demo", r.json()["deployment"]["id"])
+    assert saved_app(client)["cpu_request_m"] == 200
+
+    r = client.post(f"/api/apps/demo/rollback/{first['id']}", headers=AUTH)
+    assert wait_for_status(client, "demo", r.json()["id"])["status"] == "SUCCEEDED"
+    assert (saved_app(client)["cpu_request_m"], saved_app(client)["cpu_limit_m"]) == (100, 500)
+
+
+def test_good_change_queued_behind_a_failed_one_is_kept(client, ops):
+    wait_for_status(client, "demo", create(client)["deployment"]["id"])
+
+    ops.rollout_results = [(False, "readiness probe failed")]
+    bad = client.patch("/api/apps/demo", json={"hpa_max": 9}, headers=AUTH).json()["deployment"]
+    good = client.patch("/api/apps/demo", json={"hpa_max": 7}, headers=AUTH).json()["deployment"]
+    assert wait_for_status(client, "demo", bad["id"])["status"] == "ROLLED_BACK"
+    assert wait_for_status(client, "demo", good["id"])["status"] == "SUCCEEDED"
+    assert saved_app(client)["hpa_max"] == 7
+    assert ops.applied[-1].hpa_max == 7
+
+
+def test_failed_build_rollout_keeps_saved_settings(client, ops):
+    wait_for_status(client, "demo", create(client)["deployment"]["id"])
+    ops.rollout_results = [(False, "pod demo-x: CrashLoopBackOff")]
+    second = client.post("/api/apps/demo/deploy", headers=AUTH).json()
+    assert wait_for_status(client, "demo", second["id"])["status"] == "ROLLED_BACK"
+    assert saved_app(client)["cpu_request_m"] == 100
+
+
 def test_config_change_redeploys_running_image(client, ops):
     first = wait_for_status(client, "demo", create(client)["deployment"]["id"])
     r = client.patch("/api/apps/demo", json={"hpa_max": 8, "cpu_request_m": 200, "cpu_limit_m": 800}, headers=AUTH)

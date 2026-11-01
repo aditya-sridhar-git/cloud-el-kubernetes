@@ -29,6 +29,10 @@ class AppSpec:
     def to_json(self) -> str:
         return json.dumps(asdict(self))
 
+    def settings(self) -> dict[str, Any]:
+        """The fields that are also stored on the App row: everything except name, image and version."""
+        return {k: v for k, v in asdict(self).items() if k not in ("name", "image", "version")}
+
     @classmethod
     def from_json(cls, raw: str) -> "AppSpec":
         return cls(**json.loads(raw))
