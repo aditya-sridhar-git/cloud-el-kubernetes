@@ -5,6 +5,7 @@ Client -> server messages: {"type": "follow_logs", "pod": "<pod name>"} / {"type
 """
 import asyncio
 import logging
+import socket
 import threading
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -23,6 +24,7 @@ class _LogFollower:
         self.loop, self.queue, self.namespace = loop, queue, namespace
         self._resp = None
         self._stopped = threading.Event()
+        self._thread: threading.Thread | None = None
 
     def _put(self, msg: dict) -> None:
         def put():
@@ -34,26 +36,58 @@ class _LogFollower:
         self.loop.call_soon_threadsafe(put)
 
     def start(self, pod: str) -> None:
-        threading.Thread(target=self._run, args=(pod,), daemon=True).start()
+        self._thread = threading.Thread(target=self._run, args=(pod,), daemon=True)
+        self._thread.start()
+
+    def join(self, timeout: float) -> None:
+        if self._thread:
+            self._thread.join(timeout)
+
+    def is_alive(self) -> bool:
+        return bool(self._thread and self._thread.is_alive())
 
     def _run(self, pod: str) -> None:
+        resp = None
         try:
-            self._resp = observe.open_log_stream(pod, self.namespace)
-            for raw in self._resp:
+            resp = observe.open_log_stream(pod, self.namespace)
+            self._resp = resp
+            if self._stopped.is_set():  # stop() ran while the stream was opening
+                return
+            for raw in resp:
                 if self._stopped.is_set():
                     break
                 self._put({"type": "pod_log", "pod": pod, "line": raw.decode(errors="replace").rstrip("\n")})
         except Exception as e:
             if not self._stopped.is_set():
                 self._put({"type": "pod_log", "pod": pod, "line": f"[log stream ended: {e}]"})
+        finally:
+            if resp is not None:
+                try:
+                    resp.close()
+                except Exception:
+                    pass
 
     def stop(self) -> None:
+        """Runs on the event loop, so it must never block.
+
+        Closing the response here would wait for the reader thread, which can sit in a read for
+        as long as the pod stays quiet, and that froze every request on the server. Breaking the
+        socket wakes the reader instead, and the reader closes the response itself. Without a
+        socket to break, the reader simply stops at the next log line.
+        """
         self._stopped.set()
-        if self._resp is not None:
-            try:
-                self._resp.close()
-            except Exception:
-                pass
+        connection = getattr(self._resp, "connection", None)
+        sock = getattr(connection, "sock", None)
+        if sock is None:
+            return
+        try:
+            sock.shutdown(socket.SHUT_RDWR)  # wakes a blocked read on Linux
+        except OSError:
+            pass
+        try:
+            socket.close(sock.detach())  # wakes a blocked read on Windows, where shutdown does not
+        except OSError:
+            pass
 
 
 @router.websocket("/ws/apps/{name}")

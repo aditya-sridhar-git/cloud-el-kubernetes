@@ -27,9 +27,9 @@ variable "budget_limit_usd" {
 }
 
 variable "server_instance_type" {
-  description = "Instance type for the K3s server node (t3.medium recommended for load experiments)."
+  description = "Instance type for the K3s server node. t3.small is the smallest that fits K3s plus the platform; t3.micro (1 GB) does not. Use t3.medium for load experiments."
   type        = string
-  default     = "t3.medium"
+  default     = "t3.small"
 }
 
 variable "worker_count" {
@@ -40,7 +40,7 @@ variable "worker_count" {
 
 variable "worker_instance_type" {
   type    = string
-  default = "t3.medium"
+  default = "t3.small"
 }
 
 variable "cpu_credits" {

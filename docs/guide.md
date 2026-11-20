@@ -169,7 +169,7 @@ scripts/start.ps1     # start them again (same Elastic IP; give K3s about a minu
 scripts/down.ps1      # destroy everything (ECR images, S3, cluster state)
 ```
 
-- A running `t3.medium` costs roughly $1/day. While stopped you still pay for the EBS volume and the Elastic IP (a few dollars a month).
+- A running `t3.small` (the default) costs roughly $0.75/day, and a `t3.medium` roughly $1.30/day. While stopped you still pay for the EBS volume and the Elastic IP (a few dollars a month).
 - CodeBuild's small instance includes 100 free build-minutes per month.
 - The $5 budget **only emails you**; it does not stop spending. Run `stop.ps1` or `down.ps1` when you finish.
 - If your public IP changes (new network), update `admin_cidrs` and re-run `scripts/up.ps1`, otherwise `kubectl` times out.
